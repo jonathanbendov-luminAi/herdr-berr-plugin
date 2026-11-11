@@ -69,15 +69,23 @@ share and plain entries split whatever is left:
 "gifs": [
   { "path": "https://media.tenor.com/XPk4hFUx1w4AAAAC/money-printer.gif", "weight": 70 },
   { "path": "https://media.tenor.com/6b-jiIe_684AAAAC/ai-datacenter-chug-water.gif", "weight": 20 },
-  "~/gifs/matrix.gif",
-  "~/gifs/nyan-cat.gif"
+  "https://media.tenor.com/fKIG2kiLVPgAAAAC/this-is-fine-its-fine.gif",
+  "https://media.tenor.com/adoVIoM4eo4AAAAC/keyboard-cat.gif"
 ]
 ```
 
-Here the money printer plays 70% of the time, SpongeBob chugging water as "datacenters" 20%, and the other two
-5% each. From the bank manager, type `5=70` to give #5 a 70% share (`5=0`
-removes the weight), or run `node set-gif.mjs weight 5 70`. `list` shows each
-GIF's odds.
+Odds for this bank:
+
+| Money printer go brrr | AI datacenter chugging water | This is fine | Keyboard cat |
+| :---: | :---: | :---: | :---: |
+| <img src="https://media.tenor.com/XPk4hFUx1w4AAAAM/money-printer.gif" width="180"> | <img src="https://media.tenor.com/6b-jiIe_684AAAAM/ai-datacenter-chug-water.gif" width="180"> | <img src="https://media.tenor.com/fKIG2kiLVPgAAAAM/this-is-fine-its-fine.gif" width="180"> | <img src="https://media.tenor.com/adoVIoM4eo4AAAAM/keyboard-cat.gif" width="180"> |
+| **70%** (weight 70) | **20%** (weight 20) | **5%** (shares the other 10%) | **5%** (shares the other 10%) |
+
+From the bank manager, type `5=70` to give #5 a 70% share (`5=0` removes the
+weight), or run `node set-gif.mjs weight 5 70`. `list` shows each GIF's odds.
+
+GIFs shown here are hosted on [Tenor](https://tenor.com) and are not part of
+this repo.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
