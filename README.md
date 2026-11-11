@@ -17,7 +17,7 @@ closes as soon as the agent is done, idle, or needs input.
 ## Install
 
 ```sh
-herdr plugin install <owner>/herdr-berr-plugin
+herdr plugin install jonathanbendov-luminAi/herdr-berr-plugin
 ```
 
 Requires `node`. For the sharp renderer also install `chafa` and `ffmpeg`
