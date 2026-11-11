@@ -68,13 +68,13 @@ share and plain entries split whatever is left:
 ```json
 "gifs": [
   { "path": "https://media.tenor.com/XPk4hFUx1w4AAAAC/money-printer.gif", "weight": 70 },
-  { "path": "~/gifs/ai-drinking-water.gif", "weight": 20 },
+  { "path": "https://media.tenor.com/6b-jiIe_684AAAAC/ai-datacenter-chug-water.gif", "weight": 20 },
   "~/gifs/matrix.gif",
   "~/gifs/nyan-cat.gif"
 ]
 ```
 
-Here the money printer plays 70% of the time, the water 20%, and the other two
+Here the money printer plays 70% of the time, SpongeBob chugging water as "datacenters" 20%, and the other two
 5% each. From the bank manager, type `5=70` to give #5 a 70% share (`5=0`
 removes the weight), or run `node set-gif.mjs weight 5 70`. `list` shows each
 GIF's odds.
