@@ -3,14 +3,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { configDir, gifInfo, have, layout, loadConfig, pickGif, stateDir, PANE_CHROME_ROWS } from "./lib.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const herdr = process.env.HERDR_BIN_PATH || "herdr";
-const stateDir = process.env.HERDR_PLUGIN_STATE_DIR || join(process.env.HOME, ".local/state/herdr-brrr");
-mkdirSync(stateDir, { recursive: true });
 const mapPath = join(stateDir, "strips.json");
 const lockDir = join(stateDir, "lock");
-const STRIP_ROWS = 17;
 const MIN_AGENT_ROWS = 18;
 
 if (existsSync(join(stateDir, "disabled"))) process.exit(0);
@@ -27,10 +25,18 @@ function run(args) {
   if (r.status !== 0) throw new Error(`herdr ${args.join(" ")}: ${r.stderr}`);
   return r.stdout ? JSON.parse(r.stdout) : {};
 }
-// Kitty images only render when herdr's client runs inside a Kitty-graphics terminal; else half-blocks.
-// Override by writing "kitty" or "blocks" to <state>/mode.
-function renderMode() {
-  try { const m = readFileSync(join(stateDir, "mode"), "utf8").trim(); if (["kitty", "blocks", "chafa"].includes(m)) return m; } catch {}
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+
+// Kitty images only render when herdr's client runs inside a Kitty-graphics terminal.
+// Override by writing kitty|chafa|blocks|none to <state>/mode.
+function renderMode(hasGif) {
+  if (!hasGif) return "none";
+  try {
+    const m = readFileSync(join(stateDir, "mode"), "utf8").trim();
+    if (["kitty", "chafa", "blocks", "none"].includes(m)) return m;
+  } catch {}
+  if (!have("ffmpeg")) return "none";
   const r = spawnSync("ps", ["-A", "-o", "pid=,ppid=,comm="], { encoding: "utf8" });
   const procs = new Map();
   for (const line of (r.stdout || "").split("\n")) {
@@ -42,9 +48,8 @@ function renderMode() {
     for (let cur = p, n = 0; cur && n < 20; cur = procs.get(cur.ppid), n++)
       if (/ghostty|kitty|wezterm/i.test(cur.comm)) return "kitty";
   }
-  return spawnSync("sh", ["-c", "command -v chafa && command -v ffmpeg"]).status === 0 ? "chafa" : "blocks";
+  return have("chafa") ? "chafa" : "blocks";
 }
-const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 // Serialize hooks: status events arrive in bursts.
 let locked = false;
@@ -65,18 +70,24 @@ try {
   const status = String(d.agent_status ?? "").toLowerCase();
 
   if (!isStrip && live.has(paneId) && kind.includes("agent_status") && status === "working" && !map[paneId]) {
+    const cfg = loadConfig();
+    const gif = pickGif(cfg);
+    const mode = renderMode(Boolean(gif));
+    const info = gif && mode !== "none" ? gifInfo(gif) : null;
     const agent = snap.agents.find((a) => a.pane_id === paneId);
-    const layout = run(["pane", "layout", "--pane", paneId]).result.layout;
-    const rect = layout.panes.find((p) => p.pane_id === paneId)?.rect;
-    // Strip height follows the image height that fits this pane's width (see strip.mjs chafaSize).
-    const w = rect ? Math.min(74, rect.width - 26 < 30 ? rect.width : rect.width - 26) : 0;
-    const stripRows = Math.min(STRIP_ROWS, Math.round(w * 16 / 74) + (rect && rect.width - 26 < 30 ? 3 : 1));
-    if (rect && !layout.zoomed && rect.height >= MIN_AGENT_ROWS + stripRows) {
-      const ratio = (1 - stripRows / rect.height).toFixed(3);
-      const strip = run(["pane", "split", paneId, "--direction", "down", "--ratio", ratio, "--no-focus", "--cwd", root])
-        .result.pane.pane_id;
-      run(["pane", "run", strip, `clear; HERDR_PLUGIN_STATE_DIR='${stateDir}' exec node strip.mjs ${paneId} ${agent?.agent ?? "agent"} ${renderMode()}`]);
-      map[paneId] = strip;
+    const lay = run(["pane", "layout", "--pane", paneId]).result.layout;
+    const rect = lay.panes.find((p) => p.pane_id === paneId)?.rect;
+    if (rect && !lay.zoomed) {
+      const maxContent = Math.max(3, Number(cfg.max_rows) - PANE_CHROME_ROWS);
+      const stripRows = layout(rect.width, maxContent, info).contentRows + PANE_CHROME_ROWS;
+      if (rect.height >= MIN_AGENT_ROWS + stripRows) {
+        const ratio = (1 - stripRows / rect.height).toFixed(3);
+        const strip = run(["pane", "split", paneId, "--direction", "down", "--ratio", ratio, "--no-focus", "--cwd", root])
+          .result.pane.pane_id;
+        const env = `HERDR_PLUGIN_STATE_DIR=${shq(stateDir)} HERDR_PLUGIN_CONFIG_DIR=${shq(configDir)} BRRR_GIF=${shq(info ? gif : "")}`;
+        run(["pane", "run", strip, `clear; ${env} exec node strip.mjs ${paneId} ${shq(agent?.agent ?? "agent")} ${mode}`]);
+        map[paneId] = strip;
+      }
     }
   } else if (!isStrip && map[paneId] && (kind.includes("closed") || status !== "working")) {
     try { run(["pane", "close", map[paneId]]); } catch {}

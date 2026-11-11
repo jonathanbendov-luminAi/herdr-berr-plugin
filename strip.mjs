@@ -1,139 +1,141 @@
-// Runs inside the strip pane: loops the GIF frames via the Kitty graphics protocol.
-import { readdirSync, readFileSync } from "node:fs";
+// Runs inside the strip pane: plays the configured GIF (if any) next to a very
+// serious AI money counter. Usage: node strip.mjs <agent-pane-id> <agent-name> <mode>
+//   mode: kitty | chafa | blocks | none
+import { spawn } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { cacheDir, gifInfo, layout, loadConfig, stateDir, LABEL_ROWS } from "./lib.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
-const [agentPane = "?", agentName = "agent", mode = "blocks"] = process.argv.slice(2);
-// blocks mode: 56x24 raw RGB frames drawn with upper-half blocks (works in any truecolor terminal)
-const BW = 56, BH = 24;
-const raw = readFileSync(join(root, "frames-56x24.rgb"));
-const blockFrames = [];
-for (let off = 0; off + BW * BH * 3 <= raw.length; off += BW * BH * 3) {
-  const px = (x, y) => { const o = off + (y * BW + x) * 3; return `${raw[o]};${raw[o + 1]};${raw[o + 2]}`; };
-  const lines = [];
-  for (let y = 0; y < BH; y += 2) {
-    let l = "";
-    for (let x = 0; x < BW; x++) l += `\x1b[38;2;${px(x, y)}m\x1b[48;2;${px(x, y + 1)}m\u2580`;
-    lines.push(l + "\x1b[0m");
-  }
-  blockFrames.push(lines);
-}
-const dir = join(root, "frames");
-const files = mode !== "kitty" ? [] : readdirSync(dir).filter((f) => f.endsWith(".png")).sort();
-const frames = files.map((f) => readFileSync(join(dir, f)).toString("base64"));
-const BASE = 4200; // image ids BASE+1..BASE+n
+const [, agentName = "agent", requestedMode = "none"] = process.argv.slice(2);
 const out = process.stdout;
 const esc = (s) => out.write(s);
-const gfx = (ctrl, payload = "") => `\x1b_G${ctrl}${payload ? ";" + payload : ""}\x1b\\`;
+const cfg = loadConfig();
+const gif = process.env.BRRR_GIF && existsSync(process.env.BRRR_GIF) ? process.env.BRRR_GIF : ""; // chosen by hook.mjs
+const info = gif ? gifInfo(gif) : null;
+const mode = info ? requestedMode : "none";
+const fps = Math.max(1, Math.min(30, Number(cfg.fps) || 12));
 
-function transmitAndPlace(id, b64, rows) {
-  let s = "";
-  for (let i = 0; i < b64.length; i += 4096) {
-    const chunk = b64.slice(i, i + 4096);
-    const more = i + 4096 < b64.length ? 1 : 0;
-    s += i === 0 ? gfx(`a=T,f=100,i=${id},r=${rows},C=1,q=2,m=${more}`, chunk) : gfx(`m=${more}`, chunk);
-  }
-  return s;
-}
-
-const sent = new Set();
-let prev = 0, i = 0, rows = 0, imgCols = 0;
+// ---------- money ledger: cumulative agent-working seconds across all runs ----------
+const ledgerPath = join(stateDir, "ledger.json");
+const readLedger = () => { try { return JSON.parse(readFileSync(ledgerPath, "utf8")).seconds || 0; } catch { return 0; } };
+const baseSeconds = readLedger();
 const started = Date.now();
+const SPENT_PER_SEC = 2_700_000; // capex, vibes-adjusted
+const MADE_PER_SEC = 0.07;       // revenue, optimistic
+const QUIPS = [
+  "ROI: soon™", "investors: still bullish", "GPUs go brrr", "tokens in, vibes out",
+  "burn rate: yes", "profitable by 2031 (maybe)", "it's not a bubble, it's a platform",
+  "the fed approves", "AGI is 6 months away", "have you tried more parameters?",
+  "unit economics: vibes", "next round: series Ω",
+];
+const usd = (n) => "$" + Math.floor(n).toLocaleString("en-US");
+const cents = (n) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-function layout() {
-  rows = Math.max(3, (out.rows || 10) - 1);
-  imgCols = Math.round(rows * 2 * (240 / 104)); // ~1:2 cell aspect
-  esc("\x1b[2J" + gfx("a=d,d=a,q=2"));
-  prev = 0;
+function labelLines() {
+  const runSecs = (Date.now() - started) / 1000;
+  const total = baseSeconds + runSecs;
+  const m = Math.floor(runSecs / 60), s = Math.floor(runSecs % 60);
+  return [
+    `\x1b[1;32m${cfg.title}\x1b[0m`,
+    `\x1b[2m${agentName} working · ${m}:${String(s).padStart(2, "0")}\x1b[0m`,
+    `\x1b[31mspent on AI  ${usd(total * SPENT_PER_SEC)}\x1b[0m`,
+    `\x1b[32mmade from AI ${cents(total * MADE_PER_SEC)}\x1b[0m`,
+    `\x1b[3;33m${QUIPS[Math.floor(Date.now() / 5000) % QUIPS.length]}\x1b[0m`,
+  ];
 }
 
-// chafa mode: ANSI frames sized to this pane's width, built once per size and cached.
-import { existsSync, mkdirSync } from "node:fs";
-import { spawn } from "node:child_process";
-const LABEL_W = 26, MAX_W = 74, ASPECT = 16 / 74;
-const cacheDir = join(process.env.HERDR_PLUGIN_STATE_DIR || join(process.env.HOME, ".local/state/herdr-brrr"), "cache");
-let chafaFrames = [], CW = 0, labelBelow = false;
-function chafaSize() {
-  const cols = out.columns || 80;
-  labelBelow = cols - LABEL_W < 30;
-  const w = Math.max(8, Math.min(MAX_W, labelBelow ? cols : cols - LABEL_W));
-  const maxRows = Math.max(2, (out.rows || 17) - (labelBelow ? 3 : 1));
-  const h = Math.max(2, Math.min(maxRows, Math.round(w * ASPECT)));
-  return [Math.round(Math.min(w, h / ASPECT)), h];
+function drawLabel(col, row) {
+  esc(labelLines().map((l, i) => `\x1b[${row + i};${col}H${l}\x1b[K`).join(""));
 }
-// Size is chosen after the pane settles; a build only takes effect if its size is still wanted.
-let wantKey = "", building = new Set(), settleTimer;
-function loadChafa() {
-  const [w, h] = chafaSize();
-  const key = `${w}x${h}`;
+
+// ---------- image renderers ----------
+let L = layout(out.columns || 80, out.rows || 15, info);
+let frames = [], fi = 0, wantKey = "", pending = new Set(), settle;
+
+function build(fmt, file, cols, rows, done) {
+  if (pending.has(file)) return;
+  pending.add(file);
+  spawn(join(root, "build-frames.sh"), [gif, info.crop, String(fps), String(cols), String(rows), fmt, file], { stdio: "ignore" })
+    .on("exit", () => { pending.delete(file); if (existsSync(file)) done(); });
+}
+
+function load() {
+  L = layout(out.columns || 80, out.rows || 15, info);
+  frames = [];
+  esc("\x1b[2J");
+  if (mode === "none") return;
+  const key = `${info.key}-${mode}-${L.imgW}x${L.imgH}-${fps}`;
   wantKey = key;
-  const file = join(cacheDir, `${key}.ans`);
+  const file = join(cacheDir, key + (mode === "chafa" ? ".ans" : mode === "blocks" ? ".rgb" : ""));
   const use = () => {
     if (wantKey !== key) return;
-    chafaFrames = readFileSync(file, "utf8").split("\f").filter((f) => f.trim())
-      .map((f) => f.replace(/\r/g, "").split("\n").filter((l) => l.length));
-    CW = w;
-    ci = 0;
+    if (mode === "chafa") {
+      frames = readFileSync(file, "utf8").split("\f").filter((f) => f.trim())
+        .map((f) => f.replace(/\r/g, "").split("\n").filter((l) => l.length));
+    } else if (mode === "blocks") {
+      const raw = readFileSync(file), w = L.imgW, h = L.imgH * 2, size = w * h * 3;
+      for (let off = 0; off + size <= raw.length; off += size) {
+        const px = (x, y) => { const o = off + (y * w + x) * 3; return `${raw[o]};${raw[o + 1]};${raw[o + 2]}`; };
+        const lines = [];
+        for (let y = 0; y < h; y += 2) {
+          let l = "";
+          for (let x = 0; x < w; x++) l += `\x1b[38;2;${px(x, y)}m\x1b[48;2;${px(x, y + 1)}m▀`;
+          lines.push(l);
+        }
+        frames.push(lines);
+      }
+    } else if (mode === "kitty") {
+      frames = readdirSync(file).filter((f) => f.endsWith(".png")).sort()
+        .map((f) => ({ b64: readFileSync(join(file, f)).toString("base64"), sent: false }));
+      esc("\x1b_Ga=d,d=A,q=2\x1b\\");
+    }
+    fi = 0;
     esc("\x1b[2J");
   };
   if (existsSync(file)) return use();
-  chafaFrames = [];
-  esc("\x1b[2J\x1b[H\x1b[2mwarming up the money printer…\x1b[0m");
-  if (building.has(key)) return;
-  building.add(key);
-  mkdirSync(cacheDir, { recursive: true });
-  spawn(join(root, "build-frames.sh"), [String(w), String(h), file], { stdio: "ignore" })
-    .on("exit", () => { building.delete(key); if (existsSync(file)) use(); });
+  esc("\x1b[H\x1b[2mwarming up the money printer…\x1b[0m");
+  build(mode === "chafa" ? "chafa" : mode === "blocks" ? "rgb" : "png", file, L.imgW, L.imgH, use);
 }
-function scheduleLoad() { clearTimeout(settleTimer); settleTimer = setTimeout(loadChafa, 400); }
-let ci = 0;
-function tickChafa() {
-  if (!chafaFrames.length) return;
-  const f = chafaFrames[ci];
-  ci = (ci + 1) % chafaFrames.length;
-  esc(f.map((l, y) => `\x1b[${y + 1};1H${l}\x1b[0m\x1b[K`).join("") +
-      (labelBelow ? label(0, f.length, f.length + 1) : label(CW, f.length)));
-}
-if (mode === "chafa") { scheduleLoad(); out.on("resize", () => { chafaFrames = []; esc("\x1b[2J"); scheduleLoad(); }); }
+const scheduleLoad = () => { clearTimeout(settle); settle = setTimeout(load, 400); };
 
-function tick() {
-  if (mode === "chafa") return tickChafa();
-  if (mode === "blocks") return tickBlocks();
-  const id = BASE + 1 + i;
+const KITTY_BASE = 4200;
+let kittyPrev = 0;
+function kittyFrame(i) {
+  const id = KITTY_BASE + 1 + i, f = frames[i];
   let s = "\x1b[H";
-  s += sent.has(id) ? gfx(`a=p,i=${id},r=${rows},C=1,q=2`) : transmitAndPlace(id, frames[i], rows);
-  sent.add(id);
-  if (prev && prev !== id) s += gfx(`a=d,d=i,i=${prev},q=2`);
-  prev = id;
-  i = (i + 1) % frames.length;
-  esc(s + label(imgCols));
-}
-
-let bi = 0;
-function tickBlocks() {
-  const f = blockFrames[bi];
-  bi = (bi + 1) % blockFrames.length;
-  esc(f.map((l, y) => `\x1b[${y + 1};1H${l}`).join("") + label(BW));
-}
-
-function label(imgWidth, imgRows, atRow) {
-  let s = "";
-  const secs = Math.floor((Date.now() - started) / 1000);
-  const t = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
-  const col = imgWidth ? imgWidth + 3 : 1;
-  const mid = atRow ?? Math.max(1, Math.floor((imgRows ?? (mode === "blocks" ? BH / 2 : rows)) / 2));
-  s += `\x1b[${mid};${col}H\x1b[1;32mmoney printer go brrr\x1b[0m\x1b[K`;
-  s += `\x1b[${mid + 1};${col}H\x1b[2m${agentName} working · ${t}\x1b[0m\x1b[K`;
+  if (!f.sent) {
+    for (let o = 0; o < f.b64.length; o += 4096) {
+      const more = o + 4096 < f.b64.length ? 1 : 0, chunk = f.b64.slice(o, o + 4096);
+      s += o === 0 ? `\x1b_Ga=T,f=100,i=${id},c=${L.imgW},r=${L.imgH},C=1,q=2,m=${more};${chunk}\x1b\\` : `\x1b_Gm=${more};${chunk}\x1b\\`;
+    }
+    f.sent = true;
+  } else s += `\x1b_Ga=p,i=${id},c=${L.imgW},r=${L.imgH},C=1,q=2\x1b\\`;
+  if (kittyPrev && kittyPrev !== id) s += `\x1b_Ga=d,d=i,i=${kittyPrev},q=2\x1b\\`;
+  kittyPrev = id;
   return s;
 }
 
+function tick() {
+  if (frames.length) {
+    if (mode === "kitty") esc(kittyFrame(fi));
+    else esc(frames[fi].map((l, y) => `\x1b[${y + 1};1H${l}\x1b[0m\x1b[K`).join(""));
+    fi = (fi + 1) % frames.length;
+  }
+  const imgRows = mode === "none" ? 0 : L.imgH;
+  if (mode === "none" || L.labelBelow) drawLabel(1, imgRows + 1);
+  else drawLabel(L.imgW + 3, Math.max(1, Math.floor((imgRows - LABEL_ROWS) / 2) + 1));
+}
+
 function cleanup() {
-  esc(gfx("a=d,d=A,q=2") + "\x1b[?25h\x1b[2J\x1b[H");
+  const runSecs = (Date.now() - started) / 1000;
+  try { writeFileSync(ledgerPath, JSON.stringify({ seconds: readLedger() + runSecs })); } catch {}
+  esc("\x1b_Ga=d,d=A,q=2\x1b\\\x1b[?25h\x1b[2J\x1b[H");
   process.exit(0);
 }
 for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"]) process.on(sig, cleanup);
-out.on("resize", layout);
-esc("\x1b[?25l");
-layout();
-setInterval(tick, 1000 / 12);
+out.on("resize", () => { frames = []; esc("\x1b[2J"); scheduleLoad(); });
+esc("\x1b[?25l\x1b[2J");
+scheduleLoad();
+setInterval(tick, 1000 / fps);
