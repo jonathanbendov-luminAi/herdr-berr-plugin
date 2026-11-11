@@ -37,18 +37,46 @@ function renderMode(hasGif) {
     if (["kitty", "chafa", "blocks", "none"].includes(m)) return m;
   } catch {}
   if (!have("ffmpeg")) return "none";
+  return kittySafe() ? "kitty" : have("chafa") ? "chafa" : "blocks";
+}
+
+// Kitty images are safe only if herdr forwards them (kitty_graphics = true) and EVERY attached
+// herdr client runs in a terminal that understands them. One Terminal.app client would print the
+// image data as text, so any unknown client means no images.
+function kittySafe() {
+  const cfgPath = process.env.HERDR_CONFIG_PATH
+    || join(process.env.XDG_CONFIG_HOME || join(process.env.HOME, ".config"), "herdr", "config.toml");
+  let on = false;
+  try {
+    let table = "";
+    for (const line of readFileSync(cfgPath, "utf8").split("\n")) {
+      const h = line.match(/^\s*\[([^\]]+)\]/);
+      if (h) table = h[1].trim();
+      const m = line.match(/^\s*kitty_graphics\s*=\s*(true|false)/);
+      if (m && table === "terminal") on = m[1] === "true";
+    }
+  } catch {}
+  if (!on) return false;
   const r = spawnSync("ps", ["-A", "-o", "pid=,ppid=,comm="], { encoding: "utf8" });
   const procs = new Map();
   for (const line of (r.stdout || "").split("\n")) {
     const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
     if (m) procs.set(m[1], { ppid: m[2], comm: m[3] });
   }
+  // A client is a herdr process whose parent is not herdr (the server runs detached under launchd).
+  let clients = 0;
   for (const p of procs.values()) {
-    if (!/(^|\/)herdr$/.test(p.comm)) continue;
-    for (let cur = p, n = 0; cur && n < 20; cur = procs.get(cur.ppid), n++)
-      if (/ghostty|kitty|wezterm/i.test(cur.comm)) return "kitty";
+    if (!/(^|\/)herdr$/.test(p.comm) || /(^|\/)herdr$/.test(procs.get(p.ppid)?.comm || "")) continue;
+    let ok = false, tty = false;
+    for (let cur = procs.get(p.ppid), n = 0; cur && n < 20; cur = procs.get(cur.ppid), n++) {
+      if (/ghostty|kitty|wezterm/i.test(cur.comm)) { ok = true; break; }
+      if (/Terminal|iTerm|login|sshd|tmux|screen|zsh|bash|fish/.test(cur.comm)) tty = true;
+    }
+    if (!ok && !tty) continue; // not a client attached to a terminal
+    if (!ok) return false;
+    clients++;
   }
-  return have("chafa") ? "chafa" : "blocks";
+  return clients > 0;
 }
 
 // Serialize hooks: status events arrive in bursts.
