@@ -1,0 +1,19 @@
+id = "herdr-brrr"
+name = "Money Printer Brrr"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "While an agent is working, a strip under its pane plays the money-printer-go-brrr GIF"
+platforms = ["linux", "macos"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["node", "hook.mjs"]
+
+[[events]]
+on = "pane.closed"
+command = ["node", "hook.mjs"]
+
+[[actions]]
+id = "toggle"
+title = "Toggle the brrr strip on/off"
+command = ["node", "toggle.mjs"]
