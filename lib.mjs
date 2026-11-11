@@ -21,18 +21,35 @@ export const DEFAULTS = {
 export function loadConfig() {
   let cfg;
   try { cfg = { ...DEFAULTS, ...JSON.parse(readFileSync(configPath, "utf8")) }; } catch { cfg = { ...DEFAULTS }; }
-  if (cfg.gif) cfg.gifs = [...new Set([...(cfg.gifs || []), cfg.gif])]; // legacy single "gif"
+  if (cfg.gif && !(cfg.gifs || []).some((e) => entryPath(e) === cfg.gif)) cfg.gifs = [...(cfg.gifs || []), cfg.gif]; // legacy single "gif"
   delete cfg.gif;
-  cfg.gifs = (cfg.gifs || []).filter(Boolean);
+  cfg.gifs = (cfg.gifs || []).filter((e) => entryPath(e));
   return cfg;
 }
 
-// Random usable GIF from the bank (skips entries that can't be read), or "".
+// A bank entry is a path/URL string, or {"path": "...", "weight": 70} where weight is a
+// percentage. Weighted entries get exactly that share; plain entries split what's left.
+export const entryPath = (e) => (typeof e === "string" ? e : e?.path || "");
+export const entryWeight = (e) => (typeof e === "object" && Number(e?.weight) > 0 ? Number(e.weight) : 0);
+
+export function bankOdds(gifs) {
+  const fixed = gifs.reduce((n, e) => n + entryWeight(e), 0);
+  const plain = gifs.filter((e) => !entryWeight(e)).length;
+  const rest = plain ? Math.max(0, 100 - fixed) / plain : 0;
+  const w = gifs.map((e) => entryWeight(e) || rest);
+  const total = w.reduce((a, b) => a + b, 0) || 1;
+  return w.map((x) => (x / total) * 100);
+}
+
+// Weighted-random usable GIF from the bank (skips entries that can't be read), or "".
 export function pickGif(cfg = loadConfig()) {
   const bank = [...cfg.gifs];
   while (bank.length) {
-    const [entry] = bank.splice(Math.floor(Math.random() * bank.length), 1);
-    const path = resolveGif(entry);
+    const odds = bankOdds(bank);
+    let r = Math.random() * 100, i = 0;
+    while (i < bank.length - 1 && (r -= odds[i]) >= 0) i++;
+    const [entry] = bank.splice(i, 1);
+    const path = resolveGif(entryPath(entry));
     if (path) return path;
   }
   return "";

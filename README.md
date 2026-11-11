@@ -62,9 +62,26 @@ ideas: Matrix falling code, a Skynet boot screen, Nyan cat, a hacking montage,
 John Cena's "you can't see me", AI drinking a lake. Leave `gifs` empty for the
 counter on its own.
 
+To favour some GIFs, give them a percentage. Weighted entries get exactly that
+share and plain entries split whatever is left:
+
+```json
+"gifs": [
+  { "path": "https://media.tenor.com/XPk4hFUx1w4AAAAC/money-printer.gif", "weight": 70 },
+  { "path": "~/gifs/ai-drinking-water.gif", "weight": 20 },
+  "~/gifs/matrix.gif",
+  "~/gifs/nyan-cat.gif"
+]
+```
+
+Here the money printer plays 70% of the time, the water 20%, and the other two
+5% each. From the bank manager, type `5=70` to give #5 a 70% share (`5=0`
+removes the weight), or run `node set-gif.mjs weight 5 70`. `list` shows each
+GIF's odds.
+
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `gifs` | `[]` | Paths or URLs. One is picked at random per strip. |
+| `gifs` | `[]` | Paths or URLs, or `{path, weight}` objects. One is picked at random per strip. |
 | `title` | `money printer go brrr` | First line of the label. |
 | `fps` | `12` | Playback rate. |
 | `max_rows` | `17` | Tallest strip, including herdr's pane border. |
@@ -93,6 +110,6 @@ writing `kitty`, `chafa`, `blocks` or `none` to
 
 - `hook.mjs`: event hook that opens and closes strips on `pane.agent_status_changed`
 - `strip.mjs`: runs inside the strip pane, animates the GIF and the counter
-- `set-gif.mjs`: GIF bank manager (`list`, `add`, `remove`, `clear`, or interactive)
+- `set-gif.mjs`: GIF bank manager (`list`, `add`, `remove`, `weight`, `clear`, or interactive)
 - `lib.mjs`: config, GIF download and crop detection, strip sizing
 - `build-frames.sh`: renders a GIF to chafa, raw RGB or PNG frames
